@@ -23,15 +23,20 @@ from flashinfer_bench import Benchmark, BenchmarkConfig, Solution, TraceSet
 app = modal.App("flashinfer-bench")
 
 trace_volume = modal.Volume.from_name("flashinfer-trace", create_if_missing=True)
-TRACE_SET_PATH = "/data"
+VOLUME_MOUNT_PATH = "/data"
+TRACE_SET_PATH = "/data/"
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install("flashinfer-bench", "torch", "triton", "numpy")
+    modal.Image.from_registry(
+        "nvidia/cuda:12.8.0-devel-ubuntu22.04",
+        add_python="3.12",
+    )
+    .pip_install("flashinfer-bench", "torch", "triton", "numpy", "ninja")
+    .env({"CUDA_HOME": "/usr/local/cuda"})
 )
 
 
-@app.function(image=image, gpu="B200:1", timeout=3600, volumes={TRACE_SET_PATH: trace_volume})
+@app.function(image=image, gpu="B200:1", timeout=3600, volumes={VOLUME_MOUNT_PATH: trace_volume})
 def run_benchmark(solution: Solution, config: BenchmarkConfig = None) -> dict:
     """Run benchmark on Modal B200 and return results."""
     if config is None:
@@ -67,6 +72,7 @@ def run_benchmark(solution: Solution, config: BenchmarkConfig = None) -> dict:
             entry = {
                 "status": trace.evaluation.status.value,
                 "solution": trace.solution,
+                "log": trace.evaluation.log,
             }
             if trace.evaluation.performance:
                 entry["latency_ms"] = trace.evaluation.performance.latency_ms
@@ -76,6 +82,12 @@ def run_benchmark(solution: Solution, config: BenchmarkConfig = None) -> dict:
                 entry["max_abs_error"] = trace.evaluation.correctness.max_absolute_error
                 entry["max_rel_error"] = trace.evaluation.correctness.max_relative_error
             results[definition.name][trace.workload.uuid] = entry
+
+            # Print error logs immediately on the remote side
+            if trace.evaluation.status.value in ("COMPILE_ERROR", "RUNTIME_ERROR"):
+                print(f"\n=== ERROR LOG for workload {trace.workload.uuid[:8]}... ===")
+                print(trace.evaluation.log or "(no log)")
+                print("=== END LOG ===")
 
     return results
 
@@ -99,7 +111,10 @@ def print_results(results: dict):
                 rel_err = result.get("max_rel_error", 0)
                 print(f" | abs_err={abs_err:.2e}, rel_err={rel_err:.2e}", end="")
 
-            print()
+            # Print log for error statuses
+            log = result.get("log", "")
+            if status in ("COMPILE_ERROR", "RUNTIME_ERROR") and log:
+                print(f"    Log: {log[:8000]}")
 
 
 @app.local_entrypoint()

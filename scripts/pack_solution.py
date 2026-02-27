@@ -57,6 +57,7 @@ def pack_solution(output_path: Path = None) -> Path:
         language=language,
         target_hardware=["cuda"],
         entry_point=entry_point,
+        binding="torch",
     )
 
     # Pack the solution
